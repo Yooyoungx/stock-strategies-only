@@ -27,7 +27,10 @@ from stock_strategies.sheet import (
     read_performance,
     write_performance,
 )
-from stock_strategies.evaluate import evaluate
+from stock_strategies.momentum_box import (
+        evaluate_momentum_box,
+        format_momentum_messages,
+    )
 from stock_strategies.notify import send_telegram, format_messages
 from stock_strategies.market import get_market_state, apply_market_filter
 from stock_strategies.night_session import (
@@ -75,7 +78,13 @@ def main():
         sid = str(row["stock_id"])
         name = row.get("name", "")
         print(f"[{i}/{len(watchlist)}] {sid} {name}")
-        r = evaluate(sid, name)
+        category = row.get("category", "")
+
+        r = evaluate_momentum_box(
+            sid,
+            name,
+            category,
+        )
         if r:
             results.append(r)
         time.sleep(0.6)
@@ -123,7 +132,11 @@ def main():
 
     # 7. 發送 Telegram
     print("發送 Telegram...")
-    for msg in format_messages(results, watchlist, market=market, night_note=night_note):
+    for msg in format_momentum_messages(
+        results,
+        market=market,
+        night_note=night_note,
+    ):
         send_telegram(msg)
         time.sleep(0.5)
 
