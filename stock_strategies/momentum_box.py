@@ -39,6 +39,9 @@ BOTTOM_VOLUME_RATIO = 0.90
 BREAKOUT_BUFFER = 0.01
 BREAKOUT_VOLUME_RATIO = 1.50
 
+# Telegram TOP 10：離箱底超過 30% 不顯示
+MAX_TOP10_DISTANCE_FROM_BOTTOM = 0.30
+
 EXCLUDED_CATEGORY_KEYWORDS = (
     "金融",
     "銀行",
@@ -280,7 +283,20 @@ def evaluate_momentum_box(
             and close > ma20
         )
 
-        # 5. 多重背離 + ATR 歷史統計
+        # 5. ATR14：供精簡買賣點位使用
+        prev_close_series = px["close"].shift(1)
+        tr_frame = (px["high"] - px["low"]).to_frame("hl")
+        tr_frame["hc"] = (px["high"] - prev_close_series).abs()
+        tr_frame["lc"] = (px["low"] - prev_close_series).abs()
+        true_range = tr_frame.max(axis=1)
+        atr14_series = true_range.ewm(
+            alpha=1 / 14,
+            adjust=False,
+            min_periods=14,
+        ).mean()
+        atr14 = float(atr14_series.iloc[-1])
+
+        # 6. 多重背離 + ATR 歷史統計
         div = analyze_divergence(px)
         divergence_score = int(div.get("score", 50))
         div_perf = div.get("performance", {})
@@ -392,6 +408,9 @@ def evaluate_momentum_box(
                 "box_high_touches": high_touches,
                 "box_low_touches": low_touches,
                 "distance_to_bottom_pct": round(distance_to_bottom * 100, 1),
+                "atr14": round(atr14, 2),
+                "bottom_buy_ceiling": round(box_low * (1 + BOTTOM_DISTANCE), 2),
+                "breakout_trigger": round(box_high * (1 + BREAKOUT_BUFFER), 2),
             },
             "divergence": div,
             "entry_price": round(entry_price, 2),
@@ -463,6 +482,54 @@ def _short_note(s: dict) -> str:
     return note
 
 
+def _trade_plan_line(s: dict) -> str:
+    """
+    精簡買賣點位：
+    - BUY：箱型結構停損 + 1.5 / 2.5 ATR 停利。
+    - WATCH：只顯示箱底區與突破觸發價。
+    """
+    t = s.get("trend", {})
+    setup = t.get("setup", "NONE")
+
+    entry = float(s.get("entry_price", 0) or 0)
+    atr14 = float(t.get("atr14", 0) or 0)
+    box_low = float(t.get("box_low", 0) or 0)
+    box_high = float(t.get("box_high", 0) or 0)
+
+    bottom_buy_ceiling = float(
+        t.get("bottom_buy_ceiling", box_low * (1 + BOTTOM_DISTANCE)) or 0
+    )
+    breakout_trigger = float(
+        t.get("breakout_trigger", box_high * (1 + BREAKOUT_BUFFER)) or 0
+    )
+
+    if setup == "BOX_BOTTOM" and entry > 0 and atr14 > 0:
+        stop = box_low - atr14 * 0.5
+        tp1 = entry + atr14 * 1.5
+        tp2 = entry + atr14 * 2.5
+        return (
+            f"🎯 買 {entry:.2f} | SL {stop:.2f} | "
+            f"TP1 {tp1:.2f} | TP2 {tp2:.2f}"
+        )
+
+    if setup == "BOX_BREAKOUT" and entry > 0 and atr14 > 0:
+        stop = box_high - atr14 * 0.5
+        tp1 = entry + atr14 * 1.5
+        tp2 = entry + atr14 * 2.5
+        return (
+            f"🎯 買 {entry:.2f} | SL {stop:.2f} | "
+            f"TP1 {tp1:.2f} | TP2 {tp2:.2f}"
+        )
+
+    if bottom_buy_ceiling > 0 and breakout_trigger > 0:
+        return (
+            f"👀 觀察買點：箱底區 ≤{bottom_buy_ceiling:.2f} | "
+            f"放量突破 ≥{breakout_trigger:.2f}"
+        )
+
+    return ""
+
+
 def _format_one_stock(s: dict) -> list[str]:
     """單檔 Telegram 精簡格式。"""
     t = s.get("trend", {})
@@ -497,6 +564,10 @@ def _format_one_stock(s: dict) -> list[str]:
         ),
     ]
 
+    trade_plan = _trade_plan_line(s)
+    if trade_plan:
+        lines.append(trade_plan)
+
     div_tokens = [
         _div_token(name, int(current.get(name, 0)))
         for name in ("RSI", "MFI", "MACD", "OBV")
@@ -530,11 +601,14 @@ def _rank_candidates(signals: list[dict]) -> list[dict]:
     """
     只挑 BUY + WATCH。
     BUY 優先，其次看綜合分、Momentum、Box 分數。
-    最多 10 檔；若只有 8 或 9 檔就全部顯示，不用 SKIP 湊數。
+    距箱底 <=30% 才進 TOP10；最多 10 檔，不用 SKIP 湊數。
     """
     candidates = [
         s for s in signals
         if s.get("action") in ("BUY", "WATCH")
+        and float(
+            s.get("trend", {}).get("distance_to_bottom_pct", 999) or 999
+        ) <= MAX_TOP10_DISTANCE_FROM_BOTTOM * 100
     ]
 
     def rank_key(s: dict):
