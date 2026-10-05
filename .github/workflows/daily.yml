@@ -2,14 +2,25 @@ name: V3 Daily Signal
 
 on:
   schedule:
-    # Taiwan time 14:30 = UTC 06:30, after market close.
+    # 主排程：台灣時間 14:30 = UTC 06:30
     - cron: "30 6 * * 1-5"
+
+    # 備援排程：台灣時間 15:05 = UTC 07:05
+    # 若主排程已成功，scheduled_main.py 會自動跳過，不重複發 Telegram。
+    - cron: "5 7 * * 1-5"
+
   workflow_dispatch:
+
+# 避免主排程與備援排程同時跑。
+# 如果前一輪還在執行，下一輪會等待；完成後再由 RunLog 判斷是否需要補跑。
+concurrency:
+  group: v3-daily-signal-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   run-signal:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -23,11 +34,11 @@ jobs:
       - name: Install deps
         run: uv sync
 
-      - name: Run signal engine
+      - name: Run signal engine with backup guard
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
-        run: uv run python main.py
+        run: uv run python scheduled_main.py
